@@ -2,7 +2,7 @@
 
 Compile-time diagnostic and prescription tool for Rust projects.
 
-Rust compile times are the #1 developer complaint. **42% of developers don't know the easy fixes.** `cargo-build-rx` scans your project in under 2 seconds — no compilation required — and produces a ranked list of prescriptions to speed up your builds.
+Rust compile times are the #1 developer complaint. 42% of developers don't know the easy fixes. `cargo-build-rx` scans your project in under 2 seconds (no compilation required) and produces a ranked prescription list to speed up your builds.
 
 ## Installation
 
@@ -13,41 +13,79 @@ cargo install cargo-build-rx
 ## Usage
 
 ```bash
-# Run all checks
-cargo build-rx
-
-# JSON output (for CI or tooling)
-cargo build-rx --format json
-
-# Run only specific checks
-cargo build-rx --only linker,profile
-
-# Skip specific checks
-cargo build-rx --skip dev-deps
-
-# Only show fixes (hide warnings and info)
-cargo build-rx --min-severity fix
+cargo build-rx                        # run all checks, terminal output
+cargo build-rx --format json          # JSON output for CI/tooling
+cargo build-rx --only linker,profile  # run specific checks only
+cargo build-rx --skip dev-deps        # skip specific checks
+cargo build-rx --min-severity fix     # only show actionable fixes
 ```
 
-## Example output
+## Proof: real output
+
+### Running on itself
+
+This is the actual output of `cargo build-rx` run on its own source tree:
 
 ```
-cargo-build-rx — 5 prescriptions for my-web-app
+cargo-build-rx — 3 prescriptions for cargo-build-rx
 
-   FIX [High] Default system linker detected
-       mold is installed and would be 2-5x faster for linking.
+  FIX  [Medium] split-debuginfo not enabled on macOS
+       Using split-debuginfo=unpacked avoids bundling debug info during linking.
 
-       -> Add to .cargo/config.toml:
-         [target.x86_64-unknown-linux-gnu]
-         linker = "clang"
-         rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+       -> In Cargo.toml [profile.dev]:
+         split-debuginfo = "unpacked"
 
-   FIX [Medium] Missing build-override opt-level for proc-macros
+  FIX  [Medium] Missing build-override opt-level for proc-macros
        Proc-macros and build scripts run at opt-level 0 by default.
        Compiling them with opt-level 3 makes them run faster during builds.
 
        -> In Cargo.toml [profile.dev.build-override]:
          opt-level = 3
+
+  INFO [Low] 9 crates with build scripts
+       9 crates have build.rs scripts.
+
+Summary: 2 fixes, 1 info
+```
+
+### Running on a bloated project
+
+A test project with tokio (full features), old serde pulling syn v1, openssl, criterion, proptest, debug=2, and opt-level=1 in dev:
+
+```
+cargo-build-rx — 10 prescriptions for test-bloated-project
+
+  FIX  [Medium] split-debuginfo not enabled on macOS
+       Using split-debuginfo=unpacked avoids bundling debug info during linking.
+
+       -> In Cargo.toml [profile.dev]:
+         split-debuginfo = "unpacked"
+
+  FIX  [Medium] Missing build-override opt-level for proc-macros
+       Proc-macros and build scripts run at opt-level 0 by default.
+       Compiling them with opt-level 3 makes them run faster during builds.
+
+       -> In Cargo.toml [profile.dev.build-override]:
+         opt-level = 3
+
+  WARN [Medium] Full debuginfo in dev profile
+       debug = 2 (full) slows compilation. Consider debug = 1 (line tables only)
+       unless you need full variable inspection.
+
+       -> In Cargo.toml [profile.dev]:
+         debug = 1
+
+  WARN [Medium] opt-level = 1 in dev profile
+       Optimization in dev slows compile times significantly.
+       Consider using opt-level = 0 for dev builds.
+
+       -> In Cargo.toml [profile.dev]:
+         opt-level = 0
+
+  WARN [Medium] syn present in 2 incompatible versions
+       Versions: 1.0.109, 2.0.117. Each distinct version is compiled separately.
+
+       -> Run: cargo update -p syn
 
   WARN [Medium] syn v1 and v2 both present
        Both syn 1.x and syn 2.x are compiled. syn is the most expensive
@@ -60,15 +98,26 @@ cargo-build-rx — 5 prescriptions for my-web-app
        The "full" feature pulls in many sub-features, increasing compile time.
        Only enable the features you actually use (e.g., rt-multi-thread, macros, io-util).
 
-  INFO [Low] 12 crates with build scripts
-       12 crates have build.rs scripts.
+  INFO [Medium] 21 crates with build scripts
+       21 crates have build.rs scripts.
+       Native linking (may invoke C compiler): openssl-sys 0.9.113,
+       rayon-core 1.13.0, wasm-bindgen-shared 0.2.118
 
-Summary: 2 fixes, 2 warnings, 1 info
+  INFO [Low] openssl has default features enabled
+       Consider using rustls as a TLS backend to avoid native compilation.
+
+  INFO [Low] 2 heavy dev-dependencies
+       criterion: heavyweight benchmarking framework
+       proptest: property-based testing (includes regex, bitset, etc.)
+
+Summary: 2 fixes, 5 warnings, 3 info
 ```
 
-Exit code is **1** if any Fix-severity findings are present, **0** otherwise — useful for CI gates.
+All 10 findings are correct. The 3 checks that stayed silent (toolchain, workspace, incremental) are also correct: rustc is current, it's not a workspace, and CARGO_INCREMENTAL is not set to 0.
 
-## Checks
+Exit code is **1** if any Fix-severity findings exist, **0** otherwise. Useful for CI gates.
+
+## The 10 checks
 
 | # | Check | What it detects |
 |---|-------|-----------------|
@@ -77,27 +126,26 @@ Exit code is **1** if any Fix-severity findings are present, **0** otherwise —
 | 3 | **duplicates** | Multiple semver-incompatible versions (escalates for syn, serde, tokio) |
 | 4 | **proc-macros** | syn v1+v2 split, total proc-macro count >15 |
 | 5 | **build-scripts** | Inventory of build.rs crates, flags those with native `links` |
-| 6 | **features** | tokio/full, reqwest/default-tls, and other heavy default features |
-| 7 | **dev-deps** | criterion, proptest, and other heavy dev-dependencies |
-| 8 | **toolchain** | rustc >2 minor versions behind stable |
+| 6 | **features** | tokio/full, reqwest/default-tls, other heavy default features |
+| 7 | **dev-deps** | criterion, proptest, other heavy dev-dependencies |
+| 8 | **toolchain** | rustc more than 2 minor versions behind stable |
 | 9 | **workspace** | Multi-crate workspace without workspace-hack crate |
 | 10 | **incremental** | CARGO_INCREMENTAL=0 set in local dev environment |
 
 ## How it works
 
-`cargo-build-rx` runs `cargo metadata` and reads your `Cargo.toml`, `.cargo/config.toml`, and environment. All checks are pure functions over this data — **no compilation of your project is required**. Typical runtime is under 2 seconds.
+`cargo-build-rx` runs `cargo metadata` and reads your `Cargo.toml`, `.cargo/config.toml`, and environment variables. All checks are pure functions over this data. No compilation of your project happens. Typical runtime is under 2 seconds.
 
 ## CI usage
 
 ```yaml
-# GitHub Actions example
 - name: Check build hygiene
   run: |
     cargo install cargo-build-rx
     cargo build-rx --min-severity fix
 ```
 
-The exit code is 1 when fixable issues are found, so it naturally fails the CI step.
+Exit code 1 when fixable issues are found, so the CI step fails naturally.
 
 ## JSON output
 
@@ -105,13 +153,13 @@ The exit code is 1 when fixable issues are found, so it naturally fails the CI s
 cargo build-rx --format json
 ```
 
-Returns an array of findings, each with `severity`, `category`, `impact`, `title`, `description`, and optional `fix` with structured `kind` (CargoConfig, CargoToml, ShellCommand, or Manual).
+Returns an array of findings with `severity`, `category`, `impact`, `title`, `description`, and optional `fix` with structured `kind` (CargoConfig, CargoToml, ShellCommand, or Manual).
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
