@@ -1,0 +1,14 @@
+# Fixture: a tidy project. No external deps (keeps `cargo metadata` offline).
+# Empty [workspace] stops cargo from walking up to the parent crate.
+[workspace]
+
+[package]
+name = "clean-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[profile.dev.build-override]
+opt-level = 3

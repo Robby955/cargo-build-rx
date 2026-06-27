@@ -1,1 +1,5 @@
 /target
+
+# Fixture projects resolve their own lockfile/target when exercised by tests.
+tests/fixtures/*/target
+tests/fixtures/*/Cargo.lock

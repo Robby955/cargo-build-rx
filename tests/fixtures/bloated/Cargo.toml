@@ -1,0 +1,13 @@
+# Fixture: a project with dev-profile settings that slow compiles. No external
+# deps, so `cargo metadata` resolves offline. Empty [workspace] stops cargo from
+# walking up to the parent crate.
+[workspace]
+
+[package]
+name = "bloated-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+opt-level = 2
+debug = 2
