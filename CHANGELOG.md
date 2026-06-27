@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-06-27
+
+### Fixed
+
+- **Test fixtures now ship with the published crate.** The `clean` and `bloated`
+  fixture projects under `tests/fixtures/` each carried a `Cargo.toml`, which made
+  cargo treat them as nested crates and strip the directories from the packaged
+  `.crate` tarball. A downstream user who unpacked the crate and ran `cargo test`
+  hit failures because the fixtures the `tests/smoke.rs` integration test depends
+  on were missing. Each fixture manifest is now committed as `Cargo.toml.fixture`,
+  so cargo packages the directory; `tests/smoke.rs` copies a fixture into a temp
+  dir and restores `Cargo.toml` before invoking the tool. `cargo package --list`
+  now contains the fixture files and downstream `cargo test` passes from the
+  published crate.
+
 ## [0.2.0] - 2026-06-26
 
 ### Changed

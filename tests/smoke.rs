@@ -1,7 +1,7 @@
 //! End-to-end tests: build the binary and run it against the crate itself and
 //! against the fixture projects under `tests/fixtures/`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn cargo_bin() -> Command {
@@ -10,11 +10,69 @@ fn cargo_bin() -> Command {
     cmd
 }
 
-fn fixture_manifest(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// A fixture project copied into a unique temp dir for the duration of one test.
+///
+/// The fixtures ship with their manifest named `Cargo.toml.fixture` rather than
+/// `Cargo.toml`. That rename is deliberate: a directory containing a real
+/// `Cargo.toml` is a nested crate, and `cargo package` strips nested crates from
+/// the published `.crate` tarball. With the manifest renamed, the fixture files
+/// travel with the package, and each test materializes a working copy here.
+struct StagedFixture {
+    dir: PathBuf,
+}
+
+impl StagedFixture {
+    fn manifest(&self) -> PathBuf {
+        self.dir.join("Cargo.toml")
+    }
+}
+
+impl Drop for StagedFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create staged dir");
+    for entry in std::fs::read_dir(src).expect("read fixture dir") {
+        let entry = entry.expect("read fixture entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_dir(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy fixture file");
+        }
+    }
+}
+
+/// Stage the named fixture into a fresh temp dir, renaming `Cargo.toml.fixture`
+/// back to `Cargo.toml` so cargo treats it as a real project at test time.
+fn stage_fixture(name: &str) -> StagedFixture {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
-        .join(name)
-        .join("Cargo.toml")
+        .join(name);
+
+    // A unique, collision-resistant directory under the system temp dir. The
+    // process-wide counter guarantees uniqueness across parallel test threads,
+    // which share a pid and can read the same nanosecond clock.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique = format!(
+        "cargo-build-rx-{name}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
+    );
+    let dir = std::env::temp_dir().join(unique);
+    copy_dir(&src, &dir);
+
+    let staged_manifest = dir.join("Cargo.toml.fixture");
+    std::fs::rename(&staged_manifest, dir.join("Cargo.toml"))
+        .expect("materialize fixture Cargo.toml");
+
+    StagedFixture { dir }
 }
 
 /// Run `cargo build-rx --format json` against a manifest and parse the array.
@@ -139,9 +197,10 @@ fn min_severity_filters() {
 #[test]
 fn default_exit_code_is_zero_without_deny() {
     // Without --deny, the tool must not fail CI even when it has findings.
+    let fixture = stage_fixture("bloated");
     let status = cargo_bin()
         .args(["build-rx", "--manifest-path"])
-        .arg(fixture_manifest("bloated"))
+        .arg(fixture.manifest())
         .args(["--format", "json"])
         .status()
         .expect("failed to run");
@@ -150,7 +209,8 @@ fn default_exit_code_is_zero_without_deny() {
 
 #[test]
 fn bloated_fixture_reports_profile_findings() {
-    let findings = run_json(&fixture_manifest("bloated"));
+    let fixture = stage_fixture("bloated");
+    let findings = run_json(&fixture.manifest());
     let titles = titles(&findings);
     assert!(
         titles.iter().any(|t| t == "Full debuginfo in dev profile"),
@@ -164,7 +224,8 @@ fn bloated_fixture_reports_profile_findings() {
 
 #[test]
 fn clean_fixture_has_no_profile_findings() {
-    let findings = run_json(&fixture_manifest("clean"));
+    let fixture = stage_fixture("clean");
+    let findings = run_json(&fixture.manifest());
     let profile: Vec<_> = findings
         .iter()
         .filter(|f| f["category"].as_str() == Some("Profile"))
@@ -178,9 +239,10 @@ fn clean_fixture_has_no_profile_findings() {
 #[test]
 fn deny_warn_exits_nonzero_on_bloated_fixture() {
     // The bloated fixture has Warn-level profile findings; --deny warn must fail.
+    let fixture = stage_fixture("bloated");
     let status = cargo_bin()
         .args(["build-rx", "--manifest-path"])
-        .arg(fixture_manifest("bloated"))
+        .arg(fixture.manifest())
         .args(["--deny", "warn", "--format", "json"])
         .status()
         .expect("failed to run");
